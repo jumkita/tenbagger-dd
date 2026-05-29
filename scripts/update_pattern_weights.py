@@ -22,10 +22,10 @@ from core.quadrant_screening.pattern_weights import (
 DEFAULT_PRIOR = PATTERN_WEIGHT_PRIOR
 
 
-def _load_signals(local_dir: Path | None):
+def _load_signals(local_dir: Path | None, max_files: int | None):
     from scripts.verify_quadrant_filters import load_signals
 
-    return load_signals(local_dir)
+    return load_signals(local_dir, max_files=max_files)
 
 
 def main() -> None:
@@ -33,10 +33,17 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="パターン重みJSONをバックテスト統計で更新")
     parser.add_argument("--local-dir", type=Path, default=None)
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        metavar="N",
+        help="daily_buy_signals_*.json を日付順で末尾 N 件だけ集計（GitHub／ローカル共通）",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    signals = _load_signals(args.local_dir)
+    signals = _load_signals(args.local_dir, args.max_files)
     if not signals:
         print("シグナルがありません。")
         sys.exit(1)

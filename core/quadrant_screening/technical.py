@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
 import pandas as pd
 
 from core.quadrant_screening.config import (
@@ -13,6 +12,31 @@ from core.quadrant_screening.config import (
     MIN_VOL_20D,
     VOL_RATIO_LOOKBACK,
 )
+
+try:
+    import talib
+
+    _TALIB_AVAILABLE = True
+except ImportError:
+    talib = None  # type: ignore[misc, assignment]
+    _TALIB_AVAILABLE = False
+
+
+# 本家 `stock-daytrade/logic.py` の BUY_PATTERNS_TALIB と同順・同ラベル
+BUY_PATTERNS_TALIB: list[tuple[str, str]] = [
+    ("赤三兵", "CDL3WHITESOLDIERS"),
+    ("明けの明星", "CDLMORNINGSTAR"),
+    ("上げ三法", "CDLRISEFALL3METHODS"),
+    ("抱きの本立ち", "CDLBELTHOLD"),
+    ("陽のつつみ線", "CDLENGULFING"),
+    ("はらみ線", "CDLHARAMI"),
+    ("切り込み線", "CDLPIERCING"),
+    ("陽のたすき線", "CDLTASUKIGAP"),
+    ("ピンバー(ハンマー)", "CDLHAMMER"),
+    ("逆ハンマー", "CDLINVERTEDHAMMER"),
+    ("スラストアップ", "CDLTHRUSTING"),
+    ("包み線", "CDLENGULFING"),
+]
 
 
 @dataclass
@@ -43,56 +67,156 @@ def passes_primary_filter(price: float, vol_20d: float) -> bool:
     return price >= MIN_PRICE and vol_20d >= MIN_VOL_20D
 
 
-def detect_buy_patterns(df: pd.DataFrame) -> list[str]:
-    """直近足の買いパターン（pandas のみ・主要6種）。"""
-    if df is None or len(df) < 3:
+def _dedupe_preserve(names: list[str]) -> list[str]:
+    """同一ラベルの二重付与（本家と同様に起こり得る）を表示用に1回にまとめる。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in names:
+        if n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+    return out
+
+
+def _talib_buy_at_last(df: pd.DataFrame, i: int) -> list[str]:
+    """最終行で TA-Lib 買いシグナル（>0）を拾う。未インストール時は空。"""
+    if not _TALIB_AVAILABLE or talib is None or i < 0:
         return []
+    out: list[str] = []
     o = df["Open"].astype(float).values
     h = df["High"].astype(float).values
-    l = df["Low"].astype(float).values
+    l_ = df["Low"].astype(float).values
     c = df["Close"].astype(float).values
+    for name_ja, fname in BUY_PATTERNS_TALIB:
+        func = getattr(talib, fname, None)
+        if func is None:
+            continue
+        try:
+            res = func(o, h, l_, c)
+            if res is not None and len(res) > i and float(res[i]) > 0:
+                out.append(name_ja)
+        except Exception:
+            continue
+    return out
+
+
+# --- stock-daytrade `logic.py` の _custom_buy_patterns と同一式（最終行のみ） ---
+
+
+def _sd_body(r: pd.Series) -> float:
+    return abs(float(r["Close"]) - float(r["Open"]))
+
+
+def _sd_range_hl(r: pd.Series) -> float:
+    return float(r["High"]) - float(r["Low"])
+
+
+def _sd_lower_shadow(r: pd.Series) -> float:
+    return min(float(r["Open"]), float(r["Close"])) - float(r["Low"])
+
+
+def _sd_upper_shadow(r: pd.Series) -> float:
+    return float(r["High"]) - max(float(r["Open"]), float(r["Close"]))
+
+
+def _sd_bull(r: pd.Series) -> bool:
+    return float(r["Close"]) > float(r["Open"])
+
+
+def _sd_bear(r: pd.Series) -> bool:
+    return float(r["Open"]) > float(r["Close"])
+
+
+def _sd_body_is_tiny(r: pd.Series) -> bool:
+    rng = _sd_range_hl(r)
+    if rng <= 1e-10:
+        return True
+    return _sd_body(r) < rng * 0.1
+
+
+def _three_down_gaps_at(df: pd.DataFrame, i: int) -> bool:
+    """stock-daytrade `detect_all_patterns` の三空叩き込みループと同趣旨。"""
+    if i < 3:
+        return False
+    gaps = 0
+    for k in range(i, i - 3, -1):
+        if k < 1:
+            break
+        curr, prev = df.iloc[k], df.iloc[k - 1]
+        if float(prev["Low"]) > float(curr["High"]):
+            gaps += 1
+        else:
+            break
+    return gaps >= 3
+
+
+def _custom_buy_at_last(df: pd.DataFrame, i: int) -> list[str]:
+    r0 = df.iloc[i]
+    r1 = df.iloc[i - 1]
+    out: list[str] = []
+
+    body0 = _sd_body(r0)
+    body1 = _sd_body(r1)
+    range0 = _sd_range_hl(r0)
+    range1 = _sd_range_hl(r1)
+    ls0 = _sd_lower_shadow(r0)
+    ls1 = _sd_lower_shadow(r1)
+    us0 = _sd_upper_shadow(r0)
+
+    if range0 > 0 and range1 > 0 and ls0 >= body0 * 2 and ls1 >= body1 * 2:
+        out.append("二本たくり線")
+    if _sd_bear(r1) and _sd_bull(r0) and float(r0["Close"]) > float(r1["Close"]):
+        out.append("陰線後の陽線")
+    if range0 > 0 and _sd_body_is_tiny(r0) and ls0 > body0 * 2 and us0 < ls0:
+        out.append("ピンバー")
+    if _sd_bull(r0) and range0 > 0 and ls0 >= range0 * 0.6:
+        out.append("スパイクロー")
+    if i >= 5 and _sd_bull(r0):
+        prev_low = min(float(df.iloc[k]["Low"]) for k in range(i - 5, i))
+        if float(r0["Low"]) <= prev_low and float(r0["Close"]) > float(df.iloc[i - 1]["Close"]):
+            out.append("リバーサルロー")
+    if range1 > 0 and float(r0["High"]) < float(r1["High"]) and float(r0["Low"]) > float(r1["Low"]):
+        out.append("インサイドバー")
+    if body1 > 0 and _sd_bull(r0) and float(r0["Open"]) < float(r1["Close"]) and float(r0["Close"]) > float(r1["Open"]):
+        out.append("包み線")
+    return out
+
+
+def detect_buy_patterns(df: pd.DataFrame) -> list[str]:
+    """直近1本の買いパターン名（本家 ``stock-daytrade/logic.detect_all_patterns`` の買い系に準拠）。
+
+    付与順: ``BUY_PATTERNS_TALIB`` → ``_custom_buy_patterns`` 相当 →
+    ``signal_scanner.CandlePatterns`` の買い3種 → 三空叩き込み。
+    TA-Lib 未インストール時は TA-Lib 分をスキップ（他は従来どおり）。
+
+    同一ラベルが複数ルートで立つ場合は ``_dedupe_preserve`` で1本化する。
+    """
+    if df is None or len(df) < 2:
+        return []
     i = len(df) - 1
     found: list[str] = []
 
-    body = abs(c[i] - o[i])
-    rng = h[i] - l[i]
-    if rng <= 0:
-        return found
+    found.extend(_talib_buy_at_last(df, i))
+    found.extend(_custom_buy_at_last(df, i))
 
-    lower = min(o[i], c[i]) - l[i]
-    upper = h[i] - max(o[i], c[i])
+    try:
+        from core.quadrant_screening.stock_daytrade_candle_patterns import CandlePatterns
 
-    # ハンマー / ピンバー（下ヒゲ長い）
-    if lower >= body * 2 and upper <= body * 0.5 and c[i] >= o[i]:
-        found.append("ハンマー")
-
-    # 包み線（陽線が前日陰線を包む）
-    if i >= 1 and c[i] > o[i] and o[i - 1] > c[i - 1]:
-        if c[i] >= o[i - 1] and o[i] <= c[i - 1]:
-            found.append("包み線")
-
-    # 赤三兵（3連陽線）
-    if i >= 2 and all(c[j] > o[j] for j in (i - 2, i - 1, i)):
-        if c[i] > c[i - 1] > c[i - 2]:
+        cp = CandlePatterns(df)
+        if cp.is_akenomyojo(i):
+            found.append("明けの明星")
+        if cp.is_aka_sanpei(i):
             found.append("赤三兵")
+        if cp.is_nihon_takuri(i):
+            found.append("二本たくり線")
+    except Exception:
+        pass
 
-    # 明けの明星（簡易）
-    if i >= 2:
-        body0 = abs(c[i - 2] - o[i - 2])
-        body1 = abs(c[i - 1] - o[i - 1])
-        if c[i - 2] < o[i - 2] and body1 <= body0 * 0.4 and c[i] > o[i]:
-            if c[i] > (o[i - 2] + c[i - 2]) / 2:
-                found.append("明けの明星")
+    if i >= 3 and _three_down_gaps_at(df, i):
+        found.append("三空叩き込み")
 
-    # 上昇三法（簡易: 大陽線→小足→ブレイク）
-    if i >= 2 and c[i - 2] > o[i - 2] and c[i] > h[i - 1] and c[i] > c[i - 2]:
-        found.append("上昇三法")
-
-    # たくり線（下ヒゲ）
-    if lower >= rng * 0.55 and body <= rng * 0.35:
-        found.append("たくり線")
-
-    return found
+    return _dedupe_preserve(found)
 
 
 def analyze_technical(df: pd.DataFrame) -> TechnicalSnapshot | None:

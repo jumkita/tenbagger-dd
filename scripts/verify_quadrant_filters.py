@@ -84,12 +84,17 @@ class Signal:
     quadrant_score: float | None = None  # integrate 準拠の compute_score 合計
 
 
-def _fetch_json_files(local_dir: Path | None) -> list[tuple[str, dict]]:
+def _fetch_json_files(local_dir: Path | None, *, max_files: int | None = None) -> list[tuple[str, dict]]:
     out: list[tuple[str, dict]] = []
     if local_dir and local_dir.is_dir():
-        for p in sorted(local_dir.glob("daily_buy_signals_*.json")):
-            if p.name == "daily_buy_signals.json":
-                continue
+        paths = sorted(
+            p
+            for p in local_dir.glob("daily_buy_signals_*.json")
+            if p.name != "daily_buy_signals.json"
+        )
+        if max_files is not None and max_files > 0:
+            paths = paths[-max_files:]
+        for p in paths:
             try:
                 out.append((p.name, json.loads(p.read_text(encoding="utf-8"))))
             except json.JSONDecodeError:
@@ -105,6 +110,8 @@ def _fetch_json_files(local_dir: Path | None) -> list[tuple[str, dict]]:
         and x["name"].endswith(".json")
         and x["name"] != "daily_buy_signals.json"
     )
+    if max_files is not None and max_files > 0:
+        names = names[-max_files:]
     for name in names:
         try:
             raw = urllib.request.urlopen(GITHUB_RAW + name).read().decode("utf-8")
@@ -120,9 +127,9 @@ def _date_from_name(name: str) -> str | None:
     return m.group(1) if m else None
 
 
-def load_signals(local_dir: Path | None) -> list[Signal]:
+def load_signals(local_dir: Path | None = None, *, max_files: int | None = None) -> list[Signal]:
     signals: list[Signal] = []
-    for fname, data in _fetch_json_files(local_dir):
+    for fname, data in _fetch_json_files(local_dir, max_files=max_files):
         d = _date_from_name(fname)
         if not d:
             continue
@@ -358,6 +365,13 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="4象限フィルタの精度検証")
     parser.add_argument("--local-dir", type=Path, default=None, help="JSONローカルDir（未指定時GitHub）")
+    parser.add_argument(
+        "--max-signal-files",
+        type=int,
+        default=None,
+        metavar="N",
+        help="daily_buy_signals_*.json を日付順で末尾 N 件だけ読む（GitHub取得の節約）",
+    )
     parser.add_argument("--skip-yfinance", action="store_true", help="OHLCV/ROE取得をスキップ（entryのみ）")
     parser.add_argument("--max-signals", type=int, default=None, help="検証件数上限（デバッグ・部分実行用）")
     parser.add_argument(
@@ -368,7 +382,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    signals = load_signals(args.local_dir)
+    signals = load_signals(args.local_dir, max_files=args.max_signal_files)
     if args.max_signals and args.max_signals > 0:
         signals = signals[: args.max_signals]
     if not signals:

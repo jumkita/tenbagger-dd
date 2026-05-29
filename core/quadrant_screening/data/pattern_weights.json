@@ -1,5 +1,5 @@
 {
-  "_comment": "パターン別重み(0-1)。n/win_rate/avg_returnは検証用。update_pattern_weights.pyで更新可。",
+  "_comment": "パターン別重み(0-1)。n/win_rate/avg_returnは検証用。update_pattern_weights.pyで更新可。detect_buy_patterns は本家相当（TA-Lib+カスタム+CandlePatterns+三空）のラベルを返す。canonical_pattern_name で JSON キーに寄せる。",
   "たくり線": {
     "weight": 1.0,
     "n": 223,

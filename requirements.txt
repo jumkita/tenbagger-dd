@@ -6,3 +6,5 @@ google-generativeai>=0.8.0
 requests>=2.31.0
 openpyxl>=3.1.0
 beautifulsoup4>=4.12.0
+# stock-daytrade 本家の BUY_PATTERNS_TALIB（ローソク足）再現のため。Windows は公式ホイールまたは別途 TA-Lib C ライブラリが必要な場合あり。
+TA-Lib>=0.4.28

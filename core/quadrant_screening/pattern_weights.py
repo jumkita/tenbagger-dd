@@ -14,7 +14,7 @@ from core.quadrant_screening.config import (
 
 _WEIGHTS_PATH = Path(__file__).resolve().parent / "data" / "pattern_weights.json"
 
-# stock-daytrade の pattern_name → 4象限 detect_buy_patterns 名
+# stock-daytrade の pattern_name / TA-Lib 表示名 → 重みJSONのキー
 SIGNAL_TO_QUADRANT_PATTERN: dict[str, str] = {
     "ピンバー": "ハンマー",
     "二本たくり線": "たくり線",
@@ -23,6 +23,17 @@ SIGNAL_TO_QUADRANT_PATTERN: dict[str, str] = {
     "リバーサルロー": "明けの明星",
     "スパイクロー": "たくり線",
     "インサイドバー": "上昇三法",
+    # TA-Lib（本家 BUY_PATTERNS_TALIB ラベル）
+    "上げ三法": "上昇三法",
+    "陽のつつみ線": "包み線",
+    "はらみ線": "上昇三法",
+    "切り込み線": "明けの明星",
+    "陽のたすき線": "上昇三法",
+    "ピンバー(ハンマー)": "ハンマー",
+    "逆ハンマー": "ハンマー",
+    "抱きの本立ち": "包み線",
+    "スラストアップ": "包み線",
+    "三空叩き込み": "明けの明星",
 }
 
 

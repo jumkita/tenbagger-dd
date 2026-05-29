@@ -82,6 +82,13 @@ def test_technical_ma_and_pattern():
     assert no_pat < total
 
 
+def test_canonical_maps_talib_labels_to_json_keys():
+    assert canonical_pattern_name("上げ三法") == "上昇三法"
+    assert canonical_pattern_name("陽のつつみ線") == "包み線"
+    assert canonical_pattern_name("ピンバー(ハンマー)") == "ハンマー"
+    assert canonical_pattern_name("三空叩き込み") == "明けの明星"
+
+
 def test_pattern_canonical_alias():
     assert canonical_pattern_name("ピンバー") == "ハンマー"
     assert canonical_pattern_name("包み線") == "包み線"

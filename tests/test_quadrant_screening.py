@@ -51,16 +51,54 @@ def test_eps_discount_positive_when_cheap():
 
 
 def test_detect_engulfing_pattern():
-    ohlc = {
-        "Open": [100, 102, 98, 97, 96],
-        "High": [101, 103, 99, 100, 105],
-        "Low": [99, 100, 95, 94, 95],
-        "Close": [100, 101, 96, 95, 104],
-        "Volume": [100_000] * 5,
-    }
-    df = pd.DataFrame(ohlc)
-    base = pd.concat([df] * 16, ignore_index=True)
-    patterns = detect_buy_patterns(base)
+    # 前日陰線を陽線が包む（stock-daytrade カスタム包み線と同条件）
+    pair = pd.DataFrame(
+        {
+            "Open": [100.0, 88.0],
+            "High": [101.0, 103.0],
+            "Low": [89.0, 87.0],
+            "Close": [90.0, 102.0],
+            "Volume": [100_000, 100_000],
+        }
+    )
+    df_long = pd.concat([pair] * 40, ignore_index=True)
+    patterns = detect_buy_patterns(df_long)
+    assert isinstance(patterns, list)
+    assert "包み線" in patterns
+
+
+def test_detect_spylrow_matches_stock_daytrade_custom():
+    """下ヒゲがレンジの60%以上の陽線 → スパイクロー（stock-daytrade と同条件）。"""
+    df = pd.DataFrame(
+        {
+            "Open": [100.0, 100.0],
+            "High": [101.0, 101.0],
+            "Low": [99.0, 98.4],
+            "Close": [100.0, 100.9],
+            "Volume": [100_000, 100_000],
+        }
+    )
+    assert "スパイクロー" in detect_buy_patterns(df)
+
+
+def test_three_down_gaps_matches_stock_daytrade():
+    """連続で前バーの安値が翌バーの高値より上 → 三空叩き込み（最終行で3連）。"""
+    df = pd.DataFrame(
+        {
+            "Open": [100.0, 95.0, 88.0, 78.0],
+            "High": [105.0, 94.0, 84.0, 74.0],
+            "Low": [100.0, 90.0, 80.0, 70.0],
+            "Close": [104.0, 92.0, 82.0, 76.0],
+            "Volume": [100_000] * 4,
+        }
+    )
+    assert "三空叩き込み" in detect_buy_patterns(df)
+
+
+def test_detect_buy_patterns_runs_full_stack():
+    """本家相当の検出が例外なく完走する（TA-Lib 未導入環境でもカスタム等は動く）。"""
+    df = _sample_uptrend_df()
+    patterns = detect_buy_patterns(df)
     assert isinstance(patterns, list)
 
 

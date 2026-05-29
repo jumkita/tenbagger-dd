@@ -1,0 +1,33 @@
+# push / PR で依存インストールと pytest。TA-Lib は Linux で C ライブラリを先にビルド。
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install TA-Lib C library (Linux)
+        run: bash scripts/ci_install_ta_lib.sh
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify TA-Lib import
+        run: python -c "import talib; print('TA-Lib OK', getattr(talib, '__version__', ''))"
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
