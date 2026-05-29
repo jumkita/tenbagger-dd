@@ -1,0 +1,26 @@
+# 秘密情報・ローカル環境
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+
+# テスト・キャッシュ
+.pytest_cache/
+.cache/
+*.log
+
+# OS・IDE
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/

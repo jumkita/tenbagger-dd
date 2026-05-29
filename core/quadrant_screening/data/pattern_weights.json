@@ -1,0 +1,39 @@
+{
+  "_comment": "パターン別重み(0-1)。n/win_rate/avg_returnは検証用。update_pattern_weights.pyで更新可。",
+  "たくり線": {
+    "weight": 1.0,
+    "n": 223,
+    "win_rate": 1.0,
+    "avg_return": 2.67
+  },
+  "ハンマー": {
+    "weight": 0.993,
+    "n": 112,
+    "win_rate": 1.0,
+    "avg_return": 2.41
+  },
+  "明けの明星": {
+    "weight": 1.0,
+    "n": 77,
+    "win_rate": 1.0,
+    "avg_return": 2.89
+  },
+  "包み線": {
+    "weight": 0.993,
+    "n": 251,
+    "win_rate": 1.0,
+    "avg_return": 2.42
+  },
+  "上昇三法": {
+    "weight": 0.999,
+    "n": 83,
+    "win_rate": 1.0,
+    "avg_return": 2.58
+  },
+  "赤三兵": {
+    "weight": 0.95,
+    "n": 35,
+    "win_rate": 0.57,
+    "avg_return": 1.5
+  }
+}
