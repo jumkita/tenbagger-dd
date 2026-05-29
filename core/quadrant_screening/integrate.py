@@ -8,7 +8,7 @@ from typing import Any
 
 import pandas as pd
 
-from core.quadrant_screening.config import ROE_DEFAULT_PCT
+from core.quadrant_screening.config import QUADRANT_MIN_SCORE_DEFAULT, ROE_DEFAULT_PCT
 from core.quadrant_screening.fundamentals import (
     FundamentalSnapshot,
     fetch_fundamentals_parallel,
@@ -94,9 +94,9 @@ def apply_quadrant_to_backtest_items(
 ) -> tuple[list[dict[str, Any]], QuadrantApplyStats]:
     if min_score is None:
         try:
-            min_score = float(os.environ.get("QUADRANT_MIN_SCORE", "25"))
+            min_score = float(os.environ.get("QUADRANT_MIN_SCORE", str(QUADRANT_MIN_SCORE_DEFAULT)))
         except ValueError:
-            min_score = 25.0
+            min_score = QUADRANT_MIN_SCORE_DEFAULT
     if top_n is None:
         try:
             top_n = int(os.environ.get("QUADRANT_TOP_N", "0")) or None

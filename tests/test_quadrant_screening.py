@@ -4,6 +4,7 @@ from __future__ import annotations
 import pandas as pd
 from dataclasses import replace
 
+from core.quadrant_screening.config import QUADRANT_MIN_SCORE_DEFAULT
 from core.quadrant_screening.fundamentals import FundamentalSnapshot, eps_discount_pct
 from core.quadrant_screening.scoring import compute_score
 from core.quadrant_screening.sector import SectorMomentum
@@ -61,6 +62,10 @@ def test_detect_engulfing_pattern():
     base = pd.concat([df] * 16, ignore_index=True)
     patterns = detect_buy_patterns(base)
     assert isinstance(patterns, list)
+
+
+def test_quadrant_min_score_default_is_50():
+    assert QUADRANT_MIN_SCORE_DEFAULT == 50.0
 
 
 def _sample_uptrend_df() -> pd.DataFrame:

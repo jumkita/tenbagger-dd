@@ -6,8 +6,9 @@
 データ: stock-daytrade の daily_buy_signals_YYYY-MM-DD.json（GitHub main）
 リターン指標: JSON の avg_return_pct（3営業日バックテスト由来）
 
-検証は「シグナル日時点のOHLCV」で一次・需給・75MAを再現。ROE/セクターは
-yfinance 欠損が多いため、取得できたサブセットで追加検証する。
+検証は「シグナル日時点のOHLCV」で一次・需給・75MA・パターンを再現。
+4象限総合点は `compute_score`（integrate / engine と同一）。ファンダ・セクター・信用は
+検証実行時点のスナップショット（シグナル日の値ではない）。
 
 実現リターンの「100万円加重%」は各シグナルに同一元本（REALIZED_WEIGHT_NOTIONAL_JPY）を
 投下したポートフォリオの加重平均リターン（算術平均の実現%と一致）。
@@ -23,18 +24,38 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from core.quadrant_screening.config import (
+    MA_PERIOD,
+    MIN_PRICE,
+    MIN_VOL_20D,
+    QUADRANT_MIN_SCORE_DEFAULT,
+    ROE_DEFAULT_PCT,
+    VOL_SPIKE_STRONG,
+)
+from core.quadrant_screening.fundamentals import (
+    FundamentalSnapshot,
+    fetch_fundamentals_parallel,
+)
+from core.quadrant_screening.margin import MarginSnapshot, fetch_margin_parallel
+from core.quadrant_screening.scoring import compute_score
+from core.quadrant_screening.sector import SectorMomentum, load_sector_momentum
+from core.quadrant_screening.technical import analyze_technical, passes_primary_filter
+from core.quadrant_screening.ticker_utils import normalize_ticker
+from core.quadrant_screening.universe import load_prime_universe
 
 GITHUB_API = "https://api.github.com/repos/jumkita/stock-daytrade/contents/"
 GITHUB_RAW = "https://raw.githubusercontent.com/jumkita/stock-daytrade/main/"
 
-# 提案仕様
-PROPOSED_MIN_PRICE = 500.0
-PROPOSED_MIN_VOL_20D = 300_000
-PROPOSED_VOL_SPIKE = 1.5
-MA_PERIOD = 75
+# 4象限一次（config と同一）
+PROPOSED_MIN_PRICE = MIN_PRICE
+PROPOSED_MIN_VOL_20D = MIN_VOL_20D
 
 # 現行 stock-daytrade 一次フィルタ（logic.py）
 CURRENT_MIN_PRICE = 200.0
@@ -60,6 +81,7 @@ class Signal:
     roe_pct: float | None = None
     sector_momentum_ok: bool | None = None
     realized_return_pct: float | None = None  # シグナル日引け→3営業日後引け
+    quadrant_score: float | None = None  # integrate 準拠の compute_score 合計
 
 
 def _fetch_json_files(local_dir: Path | None) -> list[tuple[str, dict]]:
@@ -217,26 +239,62 @@ def enrich_roe(sig: Signal, roe_cache: dict[str, float | None]) -> None:
     sig.roe_pct = val
 
 
-def proposed_score(sig: Signal, roe_default: float = 5.0) -> float:
-    """提案100点満点の近似（セクター未取得時は需給・テクニカル・一次・ROEのみ）。"""
-    score = 0.0
-    if sig.entry >= PROPOSED_MIN_PRICE and (sig.vol_20d or 0) >= PROPOSED_MIN_VOL_20D:
-        score += 15
-    if sig.above_75ma:
-        score += 20
-    if sig.pattern_name:
-        score += 25
-    vr = sig.vol_ratio or 0
-    if vr >= PROPOSED_VOL_SPIKE:
-        score += 20
-    elif vr >= 1.2:
-        score += 10
-    roe = sig.roe_pct if sig.roe_pct is not None else roe_default
-    if roe >= 8.0:
-        score += 10
-    if sig.sector_momentum_ok:
-        score += 10
-    return min(100.0, score)
+def _sector_map_from_csv(csv_path: Path) -> dict[str, int | None]:
+    if not csv_path.is_file():
+        return {}
+    uni = load_prime_universe(csv_path)
+    out: dict[str, int | None] = {}
+    for _, row in uni.iterrows():
+        t = str(row.get("ticker") or "")
+        sec = row.get("sector_code_17")
+        out[t] = int(sec) if pd.notna(sec) else None
+    return out
+
+
+def compute_quadrant_score_for_signal(
+    sig: Signal,
+    ohlcv_cache: dict[str, pd.DataFrame],
+    fundamentals: dict[str, FundamentalSnapshot],
+    sector_map: dict[str, int | None],
+    sector_momentum: dict[int, SectorMomentum],
+    margins: dict[str, MarginSnapshot],
+) -> float | None:
+    """シグナル日までのOHLCVでテクニカル・需給を再現し、現行4象限ロジックで総合点を返す。"""
+    raw_t = sig.ticker
+    if not raw_t:
+        return None
+    norm = normalize_ticker(raw_t) or raw_t
+    df = ohlcv_cache.get(raw_t)
+    if df is None or (hasattr(df, "empty") and df.empty):
+        df = ohlcv_cache.get(norm)
+    if df is None or df.empty:
+        return None
+    signal_d = datetime.strptime(sig.signal_date, "%Y-%m-%d").date()
+    hist = df[df["_date"] <= signal_d].sort_values("_date").reset_index(drop=True)
+    tech = analyze_technical(hist)
+    if tech is None or not passes_primary_filter(tech.price, tech.vol_20d_avg):
+        return None
+    fund = fundamentals.get(norm) or fundamentals.get(raw_t)
+    if fund is None:
+        fund = FundamentalSnapshot(
+            roe_pct=ROE_DEFAULT_PCT,
+            trailing_eps=None,
+            trailing_pe=None,
+            roe_is_default=True,
+        )
+    sec_code = sector_map.get(norm) or sector_map.get(raw_t)
+    sec_mom: SectorMomentum | None = None
+    if sec_code is not None and sec_code in sector_momentum:
+        sec_mom = sector_momentum[sec_code]
+    margin = margins.get(norm) or margins.get(raw_t)
+    return compute_score(
+        tech,
+        fund,
+        sec_mom,
+        sector_code=sec_code,
+        ticker=norm,
+        margin=margin,
+    ).total
 
 
 @dataclass
@@ -302,6 +360,12 @@ def main() -> None:
     parser.add_argument("--local-dir", type=Path, default=None, help="JSONローカルDir（未指定時GitHub）")
     parser.add_argument("--skip-yfinance", action="store_true", help="OHLCV/ROE取得をスキップ（entryのみ）")
     parser.add_argument("--max-signals", type=int, default=None, help="検証件数上限（デバッグ・部分実行用）")
+    parser.add_argument(
+        "--csv",
+        type=Path,
+        default=ROOT / "data" / "jpx_all_tickers.csv",
+        help="17業種コード付き銘柄CSV（セクター配点用・未指定時 data/jpx_all_tickers.csv）",
+    )
     args = parser.parse_args()
 
     signals = load_signals(args.local_dir)
@@ -332,6 +396,19 @@ def main() -> None:
             if (i + 1) % 50 == 0:
                 print(f"# OHLCV enrich {i+1}/{len(signals)}", file=sys.stderr)
 
+        sector_map = _sector_map_from_csv(args.csv)
+        _topix, sector_momentum = load_sector_momentum()
+        unique_tickers = sorted({normalize_ticker(s.ticker) or s.ticker for s in signals if s.ticker})
+        fundamentals = fetch_fundamentals_parallel(unique_tickers)
+        margins = fetch_margin_parallel(unique_tickers)
+        for sig in signals:
+            sig.quadrant_score = compute_quadrant_score_for_signal(
+                sig, ohlcv_cache, fundamentals, sector_map, sector_momentum, margins
+            )
+
+        core4_label = f"4象限コア（500+30万+75MA+出来高≥{VOL_SPIKE_STRONG}）"
+        min_label = f"4象限スコア≥{int(QUADRANT_MIN_SCORE_DEFAULT)}"
+
         for sig in signals:
             _grp("全シグナル（現行出力）").add(sig)
             if sig.entry >= CURRENT_MIN_PRICE:
@@ -342,21 +419,23 @@ def main() -> None:
                 _grp("提案一次: 500円+30万株").add(sig)
             if sig.above_75ma:
                 _grp("提案テクニカル: 75MA上").add(sig)
-            if sig.vol_ratio is not None and sig.vol_ratio >= PROPOSED_VOL_SPIKE:
-                _grp("提案需給: 出来高1.5倍").add(sig)
+            if sig.vol_ratio is not None and sig.vol_ratio >= VOL_SPIKE_STRONG:
+                _grp(f"提案需給: 出来高≥{VOL_SPIKE_STRONG}").add(sig)
             if (
                 sig.entry >= PROPOSED_MIN_PRICE
                 and (sig.vol_20d or 0) >= PROPOSED_MIN_VOL_20D
                 and sig.above_75ma
                 and sig.vol_ratio is not None
-                and sig.vol_ratio >= PROPOSED_VOL_SPIKE
+                and sig.vol_ratio >= VOL_SPIKE_STRONG
             ):
-                _grp("提案コア4条件").add(sig)
+                _grp(core4_label).add(sig)
             roe = sig.roe_pct if sig.roe_pct is not None else 5.0
             if roe >= 8.0:
                 _grp("ROE>=8%（欠損は5%扱いで除外）").add(sig)
+            if sig.quadrant_score is not None and sig.quadrant_score >= QUADRANT_MIN_SCORE_DEFAULT:
+                _grp(min_label).add(sig)
 
-        scored = [(proposed_score(s), s) for s in signals if s.above_75ma is not None]
+        scored = [(s.quadrant_score, s) for s in signals if s.quadrant_score is not None]
         scored.sort(key=lambda x: x[0], reverse=True)
         if scored:
             k = max(1, len(scored) // 5)
@@ -370,16 +449,20 @@ def main() -> None:
     print(f"# 検証対象: {len(signals)} 件（買いシグナル）")
     print(f"# BT指標: JSON avg_return_pct（パターン過去BT・翌寄り3日）")
     print(f"# 実現指標: シグナル日引け買い→3営業日後引け（verify_signal_returns 準拠）")
+    print(
+        "# 4象限総合点: `compute_score`（OHLCVはシグナル日まで／ファンダ・セクター・信用は検証実行時点）"
+    )
     print()
     summarize(groups)
 
+    core4_key = f"4象限コア（500+30万+75MA+出来高≥{VOL_SPIKE_STRONG}）"
     base = groups.get("全シグナル（現行出力）")
-    prop = groups.get("提案コア4条件")
+    prop = groups.get(core4_key)
     if base and prop and prop.n_realized and base.avg_realized is not None and prop.avg_realized is not None:
         delta = prop.avg_realized - base.avg_realized
         print()
         print("## 判定メモ（実現リターン基準）")
-        print(f"- 提案コア4条件 vs 全体: 実現平均 **{delta:+.3f}pt**（{prop.n_realized}件 / 全体{base.n_realized}件）")
+        print(f"- {core4_key} vs 全体: 実現平均 **{delta:+.3f}pt**（{prop.n_realized}件 / 全体{base.n_realized}件）")
         if delta > 0.3:
             print("- **精度向上の可能性: 中**（実現リターンが明確に改善）")
         elif delta > 0:

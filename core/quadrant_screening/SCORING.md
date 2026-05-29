@@ -15,6 +15,8 @@
 
 信用データ: 環境変数 `JQUANTS_REFRESH_TOKEN` 設定時に J-Quants 週次信用残。未設定時は `.cache/margin_ratios.json` のキャッシュのみ（無ければ0点）。
 
+**J-Quants プラン（目安）**: 公式の区分では **信用取引データ**は **Standard（¥3,300/月〜）以降**に含まれる記載が多く、**無料プラン・Light（¥1,650）のみでは週次信用残 API が使えない**可能性が高いです。契約前に [J-Quants](https://jpx-jquants.com/) の「含まれるデータ」で **信用取引／信用残** を確認してください。
+
 ## テクニカル（最大40点）
 
 | 内訳 | 条件 |
@@ -39,6 +41,36 @@
 
 `verify_quadrant_filters.py` の「100万円加重%」列は、各シグナルに **同一元本100万円** を投下したポートフォリオの実現リターン（旧100株加重は廃止）。
 
+## 足切り（`QUADRANT_MIN_SCORE`）の目安
+
+**絶対最適は存在しない**（市場・信用データの有無・母集団で分布が変わる）。運用は「候補数」とのトレードオフで決める。
+
+- **バックテスト連携**（`integrate.py`）の既定は **50点**（`QUADRANT_MIN_SCORE` 未設定時。`config.QUADRANT_MIN_SCORE_DEFAULT`）。
+- **再現用**: 母集団先頭250件・75MA通過34件の1スナップショットでは次のとおり（参考）:
+
+| 閾値 | 通過件数（34件中） |
+|------|---------------------|
+| ≥55 | 4 |
+| ≥50 | 6 |
+| ≥45 | 7 |
+| ≥40 | 11 |
+| ≥35 | 12 |
+| ≥30 | 16 |
+| ≥25 | 19 |
+
+**目安（そのサンプル）**
+
+| 買いたい候補のイメージ | 推奨閾値（出発点） |
+|------------------------|-------------------|
+| 極少数（〜5銘柄） | **50〜55**（上位寄り） |
+| 少人数（〜10） | **40〜48** |
+| やや広め（〜15〜20） | **30〜38** |
+| 広く見て手で絞る | **25〜28**（緩い足切り。コード既定は **50** のため、広く取る場合は `QUADRANT_MIN_SCORE` で下げる） |
+
+分布の再確認: `python scripts/analyze_quadrant_score_distribution.py --limit 250`（`--limit` で母集団サイズ変更可）。
+
+**注意**: J-Quants 未設定時は信用点が乗らず、閾値を上げすぎると件数がさらに減る。トークン設定後は同スクリプトで再チェックするとよい。
+
 ## 定期実行コマンド
 
 ```powershell
@@ -48,7 +80,7 @@ python scripts/run_quadrant_screen.py --top 5
 python scripts/verify_quadrant_filters.py --max-signals 100
 ```
 
-パターン名は stock-daytrade 向け名称を `SIGNAL_TO_QUADRANT_PATTERN`（`pattern_weights.py`）で4象限名に集約してから重み付けする。
+- `verify_quadrant_filters.py` は **`compute_score` と同一の4象限総合点** を算出（上位/中位/下位20%の分位もこのスコア基準）。OHLCVはシグナル日まで、ファンダ・セクター・信用は検証実行時点。
 
 ## 未実装・要準備（2026-05-28 時点）
 
@@ -57,4 +89,4 @@ python scripts/verify_quadrant_filters.py --max-signals 100
 | 信用倍率スコア | コード済・データ0件 | `.env` に `JQUANTS_REFRESH_TOKEN`（[J-Quants](https://jpx-jquants.com/) 無料登録） |
 | パターン重みの完全同期 | 集計済（746件→5象限名） | stock-daytrade と4象限の検出ロジック統一が理想 |
 | 全件フィルタ検証 | 部分実行のみ（60件） | `verify_quadrant_filters.py` 全746件は yfinance 取得で30分〜 |
-| CI自動更新 | 未設定 | GitHub Actions + シークレット + workflow 追加 |
+| CI自動更新 | **ワークフロー追加済み**（`.github/workflows/pattern-weights.yml`） | GitHub で **Actions の read/write 許可** を有効化（未設定だと push 失敗） |
